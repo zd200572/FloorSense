@@ -21,7 +21,8 @@ data class ParkingMemoryState(
     val estimatedFloorLabel: String? = null, // 如 "B2", "B3"
     val depthMeters: Float = 0f,             // 距离地面垂直深度 (如 -7.5m)
     val parkedTimestampMs: Long? = null,
-    val isConfirmedByReturnAscent: Boolean = false // true=已通过回1F电梯精确确认，false=仅靠进库下坡预估
+    val isConfirmedByReturnAscent: Boolean = false, // true=已通过回1F电梯精确确认，false=仅靠进库下坡预估
+    val carParkedPressureHpa: Float? = null  // 车位气压锚点（持久化恢复用）
 )
 
 /**
@@ -127,7 +128,32 @@ class ParkingMemoryEngine(
             estimatedFloorLabel = FloorStateMachine.formatFloorLabel(initialFloorIdx),
             depthMeters = -initialDepthMeters,
             parkedTimestampMs = currentTimeMs,
-            isConfirmedByReturnAscent = false
+            isConfirmedByReturnAscent = false,
+            carParkedPressureHpa = currentSmoothPressureHpa
+        )
+    }
+
+    /**
+     * 恢复持久化的未结算停车追踪（应用被杀后的记忆机制）：
+     * 重建「已记录车位，等待上楼」阶段，车位气压锚点来自快照。
+     */
+    fun restoreParked(
+        carParkedPressureHpa: Float,
+        parkedAtMs: Long,
+        estimatedFloorLabel: String?,
+        depthMeters: Float,
+        confirmedByReturnAscent: Boolean
+    ) {
+        this.carParkedPressureHpa = carParkedPressureHpa
+        peakAscentDropHpa = 0f
+        stationaryStreakCount = 0
+        _parkingState.value = ParkingMemoryState(
+            phase = ParkingTrackPhase.PARKED_WAITING_ASCENT,
+            estimatedFloorLabel = estimatedFloorLabel,
+            depthMeters = depthMeters,
+            parkedTimestampMs = parkedAtMs,
+            isConfirmedByReturnAscent = confirmedByReturnAscent,
+            carParkedPressureHpa = carParkedPressureHpa
         )
     }
 

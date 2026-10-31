@@ -80,6 +80,16 @@ class FloorStateMachine(
         _state.value = FloorUiState()
     }
 
+    /**
+     * 恢复持久化的锚点快照（应用重启后的记忆机制）：
+     * 直接注入上次退出时的 1F 基准气压与锁定高度，调用方需自行保证快照新鲜度。
+     */
+    fun restoreAnchor(basePressure1FHpa: Float, lockedAltitudeMeters: Float) {
+        basePressure1F = basePressure1FHpa
+        lockedAltitudeM = lockedAltitudeMeters
+        emitState(_state.value.currentPressureHpa, MotionMode.STATIONARY)
+    }
+
     private fun emitState(currentP: Float, mode: MotionMode) {
         val floorIdx = altitudeToFloorIndex(lockedAltitudeM)
         _state.value = FloorUiState(

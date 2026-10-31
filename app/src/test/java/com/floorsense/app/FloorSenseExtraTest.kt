@@ -162,6 +162,65 @@ class FloorSenseExtraTest {
         assertEquals(5, floorEngine.state.value.currentFloorIndex)
     }
 
+    /** 退出记忆：恢复持久化锚点后，静止 + 天气漂移不跳层 */
+    @Test
+    fun `restored floor anchor survives weather drift`() {
+        val gate = VerticalMotionGate()
+        val engine = FloorStateMachine(BuildingProfile.OFFICE)
+        // 上次退出时：1F 基准 1010.0 hPa，用户在 20m 高的 6F
+        engine.restoreAnchor(1010.0f, 20.0f)
+        assertEquals("6F", engine.state.value.currentFloorLabel)
+
+        var timeMs = 0L
+        var pressure = 1010.0f - 20.0f / 8.43f
+        repeat(3000) { // 5 分钟静止 + 0.5 hPa 台风降压
+            timeMs += 100L
+            pressure -= 0.5f / 3000f
+            engine.update(gate.process(SensorFrame(timeMs, pressure, 0.02f, false)))
+        }
+        assertEquals("6F", engine.state.value.currentFloorLabel)
+    }
+
+    /** 退出记忆：恢复未结算停车状态后，电梯回 1F 仍能正确结算 */
+    @Test
+    fun `restored parking state settles on return ascent`() {
+        val gate = VerticalMotionGate()
+        val engine = ParkingMemoryEngine(BuildingProfile.OFFICE)
+        engine.restoreParked(
+            carParkedPressureHpa = 1011.34f,
+            parkedAtMs = 0L,
+            estimatedFloorLabel = "B3",
+            depthMeters = -11.3f,
+            confirmedByReturnAscent = false
+        )
+        assertEquals(ParkingTrackPhase.PARKED_WAITING_ASCENT, engine.parkingState.value.phase)
+
+        var timeMs = 0L
+        var pressure = 1011.34f
+        repeat(80) { step -> // 电梯升回 1F
+            timeMs += 100L
+            pressure -= 1.34f / 80f
+            val accZ = when {
+                step < 10 -> 0.8f
+                step > 70 -> -0.8f
+                else -> 0.05f
+            }
+            engine.onSensorFrame(gate.process(SensorFrame(timeMs, pressure, accZ, false)))
+        }
+        repeat(30) { // 回到地面静止 + GPS
+            timeMs += 100L
+            engine.onSensorFrame(
+                gate.process(SensorFrame(timeMs, pressure, 0.02f, false, hasGpsSignal = true)),
+                hasGps = true
+            )
+        }
+
+        val state = engine.parkingState.value
+        assertEquals(ParkingTrackPhase.SETTLED, state.phase)
+        assertEquals("B3", state.estimatedFloorLabel)
+        assertTrue(state.isConfirmedByReturnAscent)
+    }
+
     /** 楼层命名映射：跳过 0 层（规格书 §2.2） */
     @Test
     fun `floor label formatting skips zero floor`() {

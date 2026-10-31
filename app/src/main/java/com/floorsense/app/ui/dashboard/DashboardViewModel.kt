@@ -10,16 +10,21 @@ import com.floorsense.app.data.model.SensorFrame
 import com.floorsense.app.data.sensor.HardwareSensorSource
 import com.floorsense.app.data.sensor.MockSensorSource
 import com.floorsense.app.data.sensor.SensorDataSource
+import com.floorsense.app.data.settings.AnchorSnapshot
 import com.floorsense.app.data.settings.UserPreferencesRepository
 import com.floorsense.app.domain.engine.FloorStateMachine
 import com.floorsense.app.domain.engine.FloorUiState
 import com.floorsense.app.domain.engine.ParkingMemoryEngine
 import com.floorsense.app.domain.engine.ParkingMemoryState
+import com.floorsense.app.domain.engine.ParkingTrackPhase
 import com.floorsense.app.domain.filter.BaroKalmanFilter
 import com.floorsense.app.domain.filter.FilteredSensorState
 import com.floorsense.app.domain.filter.VerticalMotionGate
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -52,9 +57,10 @@ data class DashboardUiState(
     val floor: FloorUiState = FloorUiState(),
     val parking: ParkingMemoryState = ParkingMemoryState(),
     val chart: List<ChartPoint> = emptyList(),
-    val mode: SensorMode = SensorMode.MOCK,
+    val mode: SensorMode = SensorMode.HARDWARE,
     val profile: BuildingProfile = BuildingProfile.OFFICE,
-    val scenarioPlaying: Boolean = false
+    val scenarioPlaying: Boolean = false,
+    val hardwareError: String? = null
 )
 
 /**
@@ -80,6 +86,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private var collectJob: Job? = null
     private var lastFiltered: FilteredSensorState? = null
+    private var framesProcessed = 0
+    private var lastAnchorSaveMs = 0L
+    private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
         viewModelScope.launch {
@@ -89,15 +98,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 _uiState.update { it.copy(profile = profile) }
             }
         }
-        startPipeline(SensorMode.MOCK)
+        restorePersistedAnchor()
+        startPipeline(SensorMode.HARDWARE)
     }
 
     fun switchSource(mode: SensorMode) {
         if (mode == _uiState.value.mode) return
-        startPipeline(mode)
+        // 手动切换数据源意味着物理场景变更，清除持久化锚点避免恢复过期状态
+        startPipeline(mode, clearPersistedAnchor = true)
     }
 
-    private fun startPipeline(mode: SensorMode) {
+    private fun startPipeline(mode: SensorMode, clearPersistedAnchor: Boolean = false) {
         collectJob?.cancel()
         stopScenario()
         // 切换数据源意味着物理场景变更，全部状态复位重锚定
@@ -105,12 +116,26 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         floorEngine.reset()
         parkingEngine.reset()
         kalman.reset()
-        _uiState.update { it.copy(mode = mode, chart = emptyList()) }
+        framesProcessed = 0
+        _uiState.update { it.copy(mode = mode, chart = emptyList(), hardwareError = null) }
+        if (clearPersistedAnchor) {
+            persistenceScope.launch { prefs.clearAnchor() }
+        }
 
         val source: SensorDataSource =
             if (mode == SensorMode.MOCK) mockSource else hardwareSource
         collectJob = viewModelScope.launch(Dispatchers.Default) {
-            source.observeSensorFrames().collect { frame -> onFrame(frame) }
+            try {
+                source.observeSensorFrames().collect { frame -> onFrame(frame) }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                // 设备没有气压计等硬件故障：给出提示并降级回模拟器模式
+                if (mode == SensorMode.HARDWARE) {
+                    _uiState.update { it.copy(hardwareError = error.message ?: "真实传感器不可用") }
+                    startPipeline(SensorMode.MOCK)
+                }
+            }
         }
     }
 
@@ -120,6 +145,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         floorEngine.update(filtered)
         parkingEngine.onSensorFrame(filtered, hasGps = frame.hasGpsSignal)
         val displayP = kalman.process(frame.pressureHpa)
+        framesProcessed++
 
         _uiState.update { st ->
             val point = ChartPoint(
@@ -134,6 +160,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 chart = (st.chart + point).takeLast(CHART_CAPACITY)
             )
         }
+        maybePersistAnchor()
     }
 
     // ---------- 模拟器控制台 ----------
@@ -189,16 +216,22 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun manualParked() {
         val filtered = lastFiltered ?: return
         parkingEngine.onVehicleParked(filtered.timestampMs, filtered.smoothPressureHpa)
+        syncEngineStateToUi()
+        maybePersistAnchor(force = true)
     }
 
     fun resetParking() {
         parkingEngine.reset()
+        syncEngineStateToUi()
+        maybePersistAnchor(force = true)
     }
 
     /** 手动锚点校准：把当前时刻强制认定为指定显示楼层（0=1F，5=6F，-2=B2） */
     fun calibrateCurrentFloor(floorIndex: Int) {
         val filtered = lastFiltered ?: return
         floorEngine.calibrateCurrentFloor(floorIndex, filtered.smoothPressureHpa)
+        syncEngineStateToUi()
+        maybePersistAnchor(force = true)
     }
 
     /**
@@ -220,6 +253,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 parkingEngine.updateProfile(custom)
             }
             floorEngine.calibrateCurrentFloor(floorIndex, filtered.smoothPressureHpa)
+            syncEngineStateToUi()
+            maybePersistAnchor(force = true)
         }
     }
 
@@ -229,12 +264,87 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { prefs.setBuildingProfile(profile) }
     }
 
+    // ---------- 退出记忆（锚点持久化） ----------
+
+    private fun syncEngineStateToUi() {
+        _uiState.update {
+            it.copy(floor = floorEngine.state.value, parking = parkingEngine.parkingState.value)
+        }
+    }
+
+    /** 应用启动时恢复上次退出保存的锚点与未结算停车状态（30 分钟内有效，仅真实传感器模式） */
+    private fun restorePersistedAnchor() {
+        viewModelScope.launch {
+            val snap = prefs.loadAnchor() ?: return@launch
+            val fresh = System.currentTimeMillis() - snap.savedAtMs <= ANCHOR_MAX_AGE_MS
+            if (!fresh || snap.mode != SensorMode.HARDWARE.name) return@launch
+
+            floorEngine.restoreAnchor(snap.basePressure1F, snap.lockedAltitudeM)
+            if (snap.parkingPhase == ParkingTrackPhase.PARKED_WAITING_ASCENT.name &&
+                snap.carParkedPressureHpa != null &&
+                snap.parkedTimestampMs != null
+            ) {
+                parkingEngine.restoreParked(
+                    carParkedPressureHpa = snap.carParkedPressureHpa,
+                    parkedAtMs = snap.parkedTimestampMs,
+                    estimatedFloorLabel = snap.estimatedFloorLabel,
+                    depthMeters = snap.depthMeters ?: 0f,
+                    confirmedByReturnAscent = snap.confirmedByReturnAscent
+                )
+            }
+            syncEngineStateToUi()
+        }
+    }
+
+    /**
+     * 退出记忆机制：周期性持久化楼层锚点与未结算停车状态（节流 10 秒一次）。
+     * 仅真实传感器模式下保存——模拟器锚点是虚构数据，恢复会污染真实会话。
+     * 应用正常退出由 [onCleared] 立即保存兜底；系统杀进程由周期保存兜底。
+     */
+    private fun maybePersistAnchor(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastAnchorSaveMs < ANCHOR_SAVE_INTERVAL_MS) return
+        lastAnchorSaveMs = now
+
+        val st = _uiState.value
+        val floor = st.floor
+        val parking = st.parking
+        if (st.mode != SensorMode.HARDWARE || framesProcessed == 0 || floor.basePressureHpa.isNaN()) {
+            return
+        }
+
+        val parkedWaiting = parking.phase == ParkingTrackPhase.PARKED_WAITING_ASCENT
+        persistenceScope.launch {
+            prefs.saveAnchor(
+                AnchorSnapshot(
+                    mode = SensorMode.HARDWARE.name,
+                    basePressure1F = floor.basePressureHpa,
+                    lockedAltitudeM = floor.relativeAltitudeM,
+                    parkingPhase = if (parkedWaiting) parking.phase.name else null,
+                    carParkedPressureHpa = if (parkedWaiting) parking.carParkedPressureHpa else null,
+                    parkedTimestampMs = if (parkedWaiting) parking.parkedTimestampMs else null,
+                    estimatedFloorLabel = if (parkedWaiting) parking.estimatedFloorLabel else null,
+                    depthMeters = if (parkedWaiting) parking.depthMeters else null,
+                    confirmedByReturnAscent = if (parkedWaiting) parking.isConfirmedByReturnAscent else false,
+                    savedAtMs = now
+                )
+            )
+        }
+    }
+
+    override fun onCleared() {
+        maybePersistAnchor(force = true)
+        super.onCleared()
+    }
+
     private fun scenario(vararg steps: MockSensorSource.MockStep): Pair<List<MockSensorSource.MockStep>, Long> {
         val list = steps.toList()
         return list to list.sumOf { it.durationMs }
     }
 
     private companion object {
-        const val CHART_CAPACITY = 600 // 最近 60 秒波形
+        const val CHART_CAPACITY = 600          // 最近 60 秒波形
+        const val ANCHOR_SAVE_INTERVAL_MS = 10_000L
+        const val ANCHOR_MAX_AGE_MS = 30 * 60_000L
     }
 }

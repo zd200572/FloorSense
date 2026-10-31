@@ -80,6 +80,20 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
         ) {
             FloorHeroCard(state.floor)
 
+            state.hardwareError?.let { message ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Text(
+                        "⚠ $message —— 已自动切换到模拟器数据",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+
             PressureChart(points = state.chart)
 
             ParkingCard(
@@ -185,7 +199,7 @@ private fun PressureChart(points: List<ChartPoint>) {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "等待传感器数据…（点击下方场景按钮开始模拟）",
+                        "等待传感器数据…（模拟器模式下可用下方场景按钮注入）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
