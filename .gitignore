@@ -1,0 +1,24 @@
+# Built artifacts
+build/
+app/build/
+
+# Gradle
+.gradle/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Machine-specific SDK path
+local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kotlin/Native & misc
+.kotlin/
+cxx/
+.externalNativeBuild/
+captures/

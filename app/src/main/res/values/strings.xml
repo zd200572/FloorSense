@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FloorSense</string>
+
+    <!-- 通知渠道 -->
+    <string name="channel_tracking">停车记录进行中</string>
+    <string name="channel_result">停车结算结果</string>
+
+    <!-- 前台采集服务通知 -->
+    <string name="tracking_title">正在记录停车位置…</string>
+    <string name="tracking_text">已检测到车载蓝牙断开，下楼前保持应用存活即可自动结算</string>
+    <string name="tracking_estimate_text">预估车位：%1$s 层（深度 %2$.1f 米），乘电梯回 1F 后自动精确结算</string>
+
+    <!-- 结算通知 -->
+    <string name="settle_title">🚗 停车位置已记录</string>
+    <string name="settle_text">您的车停在 %1$s 层（深度 -%2$.1f 米）</string>
+    <string name="settle_timeout_text">未检测到上楼动作，已按进库下坡预估记录车位：%1$s 层</string>
+</resources>

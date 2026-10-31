@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标背景：对角渐变（浅蓝→深海军蓝），象征从地表下潜到地下车库；
+     底部两道极淡同心圆弧营造“深度涟漪”层次 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0 H108 V108 H0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:startColor="#4F9CF7"
+                android:endColor="#0A2E73" />
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M54,130 m-55,0 a55,55 0 1 1 110,0 a55,55 0 1 1 -110,0"
+        android:strokeColor="#66FFFFFF"
+        android:strokeWidth="2.5"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M54,130 m-78,0 a78,78 0 1 1 156,0 a78,78 0 1 1 -156,0"
+        android:strokeColor="#40FFFFFF"
+        android:strokeWidth="2.5"
+        android:fillColor="#00000000" />
+</vector>
